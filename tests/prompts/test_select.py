@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from copy import copy
+
 import pytest
 
 from questionary import Choice
@@ -199,6 +201,29 @@ def test_allow_shortcut_key_with_True():
     assert result == "bazz"
 
 
+def test_auto_shortcut_key_stable_in_loop():
+    message = "Foo message"
+    choices = [
+        Choice("foo"),
+        Choice("bar"),
+    ]
+    kwargs = {
+        "choices": choices,
+        "use_shortcuts": True,
+    }
+    text = "\r"
+
+    result, cli = feed_cli_with_input("select", message, text, **kwargs)
+    assert result == "foo"
+    result_shortcut_keys = [copy(c.shortcut_key) for c in choices]
+    result2, cli = feed_cli_with_input("select", message, text, **kwargs)
+    assert result2 == "foo"
+    result2_shortcut_keys = [copy(c.shortcut_key) for c in choices]
+    assert (
+        result_shortcut_keys == result2_shortcut_keys
+    ), "Shortcut keys changed across two runs of 'select'"
+
+
 def test_select_initial_choice_with_value():
     message = "Foo message"
     choice = Choice(title="bazz", value="bar")
@@ -384,3 +409,102 @@ def test_select_default_has_arrow_keys():
 
     result, cli = feed_cli_with_input("select", message, text, **kwargs)
     assert result == "bazz"
+
+
+def test_select_filter_with_jk_movement_exception():
+    message = "Foo message"
+    kwargs = {
+        "choices": ["foo", "bazz"],
+        "use_arrow_keys": True,
+        "use_shortcuts": False,
+    }
+    text = "2" + KeyInputs.ENTER + "\r"
+    with pytest.raises(ValueError):
+        feed_cli_with_input("select", message, text, use_search_filter=True, **kwargs)
+
+
+def test_filter_prefix_one_letter():
+    message = "Foo message"
+    kwargs = {"choices": ["abc", "def", "ghi", "jkl"]}
+    text = "g" + KeyInputs.ENTER + "\r"
+
+    result, cli = feed_cli_with_input(
+        "select",
+        message,
+        text,
+        use_search_filter=True,
+        use_jk_keys=False,
+        **kwargs,
+    )
+    assert result == "ghi"
+
+
+def test_filter_prefix_multiple_letters():
+    message = "Foo message"
+    kwargs = {"choices": ["abc", "def", "ghi", "jkl", "jag", "jja"]}
+    text = "j" + "j" + KeyInputs.ENTER + "\r"
+
+    result, cli = feed_cli_with_input(
+        "select",
+        message,
+        text,
+        use_search_filter=True,
+        use_jk_keys=False,
+        **kwargs,
+    )
+    assert result == "jja"
+
+
+def test_select_filter_handle_backspace():
+    message = "Foo message"
+    kwargs = {"choices": ["abc", "def", "ghi", "jkl", "jag", "jja"]}
+    text = "j" + "j" + KeyInputs.BACK + KeyInputs.ENTER + "\r"
+
+    result, cli = feed_cli_with_input(
+        "select",
+        message,
+        text,
+        use_search_filter=True,
+        use_jk_keys=False,
+        **kwargs,
+    )
+    assert result == "jkl"
+
+    message = "Foo message"
+    kwargs = {"choices": ["abc", "def", "ghi", "jkl", "jag", "jja"]}
+    text = (
+        "j"
+        + "j"
+        + KeyInputs.BACK
+        + KeyInputs.BACK
+        + KeyInputs.BACK
+        + KeyInputs.BACK
+        + KeyInputs.ENTER
+        + "\r"
+    )
+
+    result, cli = feed_cli_with_input(
+        "select",
+        message,
+        text,
+        use_search_filter=True,
+        use_jk_keys=False,
+        **kwargs,
+    )
+    assert result == "abc"
+
+
+def test_select_goes_back_to_top_after_filtering():
+    message = "Foo message"
+    kwargs = {"choices": ["abc", "def", "ghi", "jkl", "jag", "jja"]}
+    text = KeyInputs.DOWN + KeyInputs.DOWN + "j" + KeyInputs.ENTER + "\r"
+
+    result, cli = feed_cli_with_input(
+        "select",
+        message,
+        text,
+        use_search_filter=True,
+        use_jk_keys=False,
+        **kwargs,
+    )
+    assert result == "jkl"

@@ -12,11 +12,13 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.filters import Always
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.filters import IsDone
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import ConditionalContainer
 from prompt_toolkit.layout import FormattedTextControl
 from prompt_toolkit.layout import HSplit
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout import Window
+from prompt_toolkit.layout.dimension import LayoutDimension
 from prompt_toolkit.styles import Style
 from prompt_toolkit.validation import ValidationError
 from prompt_toolkit.validation import Validator
@@ -69,8 +71,7 @@ class Choice:
     checked: Optional[bool]
     """Whether the choice is initially selected"""
 
-    shortcut_key: Optional[str]
-    """A shortcut key for the choice"""
+    __shortcut_key: Optional[Union[str, bool]]
 
     description: Optional[str]
     """Choice description"""
@@ -86,6 +87,8 @@ class Choice:
     ) -> None:
         self.disabled = disabled
         self.title = title
+        self.shortcut_key = shortcut_key
+        # self.auto_shortcut is set by the self.shortcut_key setter
         self.checked = checked if checked is not None else False
         self.description = description
 
@@ -95,17 +98,6 @@ class Choice:
             self.value = "".join([token[1] for token in title])
         else:
             self.value = title
-
-        if shortcut_key is not None:
-            if isinstance(shortcut_key, bool):
-                self.auto_shortcut = shortcut_key
-                self.shortcut_key = None
-            else:
-                self.shortcut_key = str(shortcut_key)
-                self.auto_shortcut = False
-        else:
-            self.shortcut_key = None
-            self.auto_shortcut = True
 
     @staticmethod
     def build(c: Union[str, "Choice", Dict[str, Any]]) -> "Choice":
@@ -134,11 +126,53 @@ class Choice:
                 c.get("description", None),
             )
 
+    @property
+    def shortcut_key(self) -> Optional[Union[str, bool]]:
+        """A shortcut key for the choice"""
+        return self.__shortcut_key
+
+    @shortcut_key.setter
+    def shortcut_key(self, key: Optional[Union[str, bool]]):
+        if key is not None:
+            if isinstance(key, bool):
+                self.__auto_shortcut = key
+                self.__shortcut_key = None
+            else:
+                self.__shortcut_key = str(key)
+                self.__auto_shortcut = False
+        else:
+            self.__shortcut_key = None
+            self.__auto_shortcut = True
+
+    @shortcut_key.deleter
+    def shortcut_key(self):
+        self.__shortcut_key = None
+        self.__auto_shortcut = True
+
     def get_shortcut_title(self):
         if self.shortcut_key is None:
             return "-) "
         else:
             return "{}) ".format(self.shortcut_key)
+
+    @property
+    def auto_shortcut(self) -> bool:
+        """Whether to assign a shortcut key to the choice
+
+        Keys are assigned starting with numbers and proceeding
+        through the ASCII alphabet.
+        """
+        return self.__auto_shortcut
+
+    @auto_shortcut.setter
+    def auto_shortcut(self, should_assign: bool):
+        self.__auto_shortcut = should_assign
+        if self.__auto_shortcut:
+            self.__shortcut_key = None
+
+    @auto_shortcut.deleter
+    def auto_shortcut(self):
+        self.__auto_shortcut = False
 
 
 class Separator(Choice):
@@ -204,6 +238,7 @@ class InquirerControl(FormattedTextControl):
     choices: List[Choice]
     default: Optional[Union[str, Choice, Dict[str, Any]]]
     selected_options: List[Any]
+    search_filter: Union[str, None] = None
     use_indicator: bool
     use_shortcuts: bool
     use_arrow_keys: bool
@@ -275,6 +310,7 @@ class InquirerControl(FormattedTextControl):
         self.submission_attempted = False
         self.error_message = None
         self.selected_options = []
+        self.found_in_search = False
 
         self._init_choices(choices, pointed_at)
         self._assign_shortcut_keys()
@@ -344,8 +380,18 @@ class InquirerControl(FormattedTextControl):
             self.choices.append(choice)
 
     @property
+    def filtered_choices(self):
+        if not self.search_filter:
+            return self.choices
+        filtered = [
+            c for c in self.choices if self.search_filter.lower() in c.title.lower()
+        ]
+        self.found_in_search = len(filtered) > 0
+        return filtered if self.found_in_search else self.choices
+
+    @property
     def choice_count(self) -> int:
-        return len(self.choices)
+        return len(self.filtered_choices)
 
     def _get_choice_tokens(self):
         tokens = []
@@ -425,7 +471,7 @@ class InquirerControl(FormattedTextControl):
             tokens.append(("", "\n"))
 
         # prepare the select choices
-        for i, c in enumerate(self.choices):
+        for i, c in enumerate(self.filtered_choices):
             append(i, c)
 
         current = self.get_pointed_at()
@@ -467,7 +513,7 @@ class InquirerControl(FormattedTextControl):
         self.pointed_at = (self.pointed_at + 1) % self.choice_count
 
     def get_pointed_at(self) -> Choice:
-        return self.choices[self.pointed_at]
+        return self.filtered_choices[self.pointed_at]
 
     def get_selected_values(self) -> List[Choice]:
         # get values not labels
@@ -475,6 +521,39 @@ class InquirerControl(FormattedTextControl):
             c
             for c in self.choices
             if (not isinstance(c, Separator) and c.value in self.selected_options)
+        ]
+
+    def add_search_character(self, char: Keys) -> None:
+        """Adds a character to the search filter"""
+        if char == Keys.Backspace:
+            self.remove_search_character()
+        else:
+            if self.search_filter is None:
+                self.search_filter = str(char)
+            else:
+                self.search_filter += str(char)
+
+        # Make sure that the selection is in the bounds of the filtered list
+        self.pointed_at = 0
+
+    def remove_search_character(self) -> None:
+        if self.search_filter and len(self.search_filter) > 1:
+            self.search_filter = self.search_filter[:-1]
+        else:
+            self.search_filter = None
+
+    def get_search_string_tokens(self):
+        if self.search_filter is None:
+            return None
+
+        return [
+            ("", "\n"),
+            ("class:question-mark", "/ "),
+            (
+                "class:search_success" if self.found_in_search else "class:search_none",
+                self.search_filter,
+            ),
+            ("class:question-mark", "..."),
         ]
 
 
@@ -531,6 +610,10 @@ def create_inquirer_layout(
     )
     _fix_unecessary_blank_lines(ps)
 
+    @Condition
+    def has_search_string():
+        return ic.get_search_string_tokens() is not None
+
     validation_prompt: PromptSession = PromptSession(
         bottom_toolbar=lambda: ic.error_message, **kwargs
     )
@@ -540,6 +623,13 @@ def create_inquirer_layout(
             [
                 ps.layout.container,
                 ConditionalContainer(Window(ic), filter=~IsDone()),
+                ConditionalContainer(
+                    Window(
+                        height=LayoutDimension.exact(2),
+                        content=FormattedTextControl(ic.get_search_string_tokens),
+                    ),
+                    filter=has_search_string & ~IsDone(),
+                ),
                 ConditionalContainer(
                     validation_prompt.layout.container,
                     filter=Condition(lambda: ic.error_message is not None),
